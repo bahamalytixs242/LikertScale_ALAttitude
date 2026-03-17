@@ -1,0 +1,1416 @@
+---
+title: "AI Survey Analysis"
+author: "H. Rolle"
+date: "`r Sys.Date()`"
+output:
+  word_document:
+    toc: true        # optional: table of contents
+    toc_depth: 2     # optional: depth for TOC
+    reference_docx: template.docx
+---
+
+```{r setup, include=FALSE}
+
+# Set global knitr options
+knitr::opts_chunk$set(
+  echo = TRUE,
+  include = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 6.0,
+  fig.height = 2.5,
+  fig.pos = 'H',
+  dpi = 120
+)
+```
+
+
+```{r analysLibs, include=FALSE}
+
+library(graphics)   # base graphics are loaded by default
+
+```
+
+## Step 1: Literature Review of Likert Scales
+## **1.1 Nature of Likert Scales**
+Rensis Likert (1932) introduced ordered response categories (1–5) to measure the strength of responses  representing a critical examination of how survey data can be analyzed[1].  Single items are **ordinal**, but when summed or averaged into a composite, the scores often function as **interval-level** data if reliability is high.
+Because of this, researchers frequently use **parametric tests** (t-tests, ANOVA) on composite scores. The **Central Limit Theorem** supports this practice: with moderate group sizes (≥5–10), the means of multiple ordinal items approximate normality, especially when the scale shows strong internal consistency [3].
+
+#### **1.2 Data: Ordinal vs. Nominal**
+Q1–Q5 are **ordinal** (ranked responses).
+They are not nominal like gender, which has categories without inherent order [2].
+Thus, the Likert questions allow ordered comparison; nominal variables do not.
+
+#### **1.3 When ANOVA Can Be Applied**
+ANOVA is appropriate **if Likert scores are treated as continuous**, especially for the **composite AI sentiment score** (Q1–Q5).
+The scale shows **high reliability (*Cronbach α = 0.945*)**, supporting the interval assumption [2].
+ANOVA requires:
+
+-  **Normality** of residuals (checked by Q–Q plots or Shapiro–Wilk test).
+-  **Homogeneity of variances** (Levene’s test across class/gender).
+-  **Adequate sample size** (N = 212 usable cases after data cleaning).
+
+For **single items**, treating data as interval is weaker the use of **Kruskal–Wallis** is better unless assumptions are explicitly defended [3].
+
+#### **1.4 Role of Parametric Tests in Exploratory Data Analysis (EDA)**
+Descriptive Statistics help to reveal structure (central tendencies, spread, shape - correlations for Q1–Q5≈0.68).  **EDA** can validate whether the five questions form a single factor; with N ≈ 200 and only 5 items, factor solutions are stable even with ordinal inputs.
+Regression on the composite score supports interpretable estimates of class or gender effects and allows for covariate adjustment.
+
+#### **Summary**
+The composite AI sentiment scale behaves sufficiently like an **interval-level** measure to justify **parametric** EDA and group comparisons when assumptions are checked.
+Single-item Likert responses should generally be analyzed using **non-parametric** methods unless the ordinal-to-interval interpretation is clearly justified.
+
+
+```{r dataRead, include=FALSE}
+
+## Data Read
+df <- read.csv("dataFiles/ai_survey_likert.csv", stringsAsFactors = FALSE, na.strings = c("NA",""))
+
+#str(df)
+#summary(df)
+```
+
+
+```{r varConvert, include=FALSE}
+
+#### 2. Clean variable types - Conversion
+df$gender <- factor(df$gender)
+df$class  <- factor(df$class,
+                    levels = c("Freshman","Sophomore","Junior","Senior"))
+
+# Likert items are numeric 
+likert_vars <- c("Q1","Q2","Q3","Q4","Q5")
+```
+
+## Step 2: EDA & Data Structure Report -= Tab. 1
+## 2.1: Frequency tables of Gender and Class
+```{r freqTabs, echo=FALSE}
+
+gender_tab <- table(df$gender, useNA = "ifany")
+class_tab  <- table(df$class,  useNA = "ifany")
+
+cat("\nGender Distribution:\n")
+print(gender_tab)
+
+cat("\nClass Distribution:\n")
+print(class_tab)
+```
+**Observations**:
+
+- Gender: The sample consists of 94 females and 118 males, indicating a slightly male-leaning distribution. Males represent approximately 55% of the respondents, while females represent about 45%.  This imbalance is not extreme but should be kept in mind when interpreting any gender-related patterns in the Likert-scale results.
+
+- The difference is large enough that group comparisons may have unequal variance or unequal sample sizes, which can influence certain parametric tests unless adjustments are made (using Welch’s t-test).
+
+- Class: This shows a fairly balanced distribution across the first three class levels, with Juniors having the largest representation (66). Seniors are underrepresented (34) relative to other groups: they make up roughly 15% of the sample compared with ~25–28% for the other three class levels.
+
+**Implications**: Analyses involving class comparisons should note that the Senior group’s smaller size may lead to wider confidence intervals and less stable estimates.  For ANOVA-type analyses, the sample is still workable, but the imbalance might affect power when detecting differences involving Seniors.  The overall spread is reasonable and does not show any extreme sampling bias.
+
+## 2.2 Outliers & Missing values - Tab. 2 
+```{r outliers, fig.height=3, echo=FALSE}
+
+na_counts <- colSums(is.na(df))
+print(na_counts)
+
+# Percent missing
+pct_missing <- round(100 * na_counts / nrow(df), 1)
+cat("\nPercent missing per column:\n")
+print(pct_missing)
+
+# Visual inspection of missingness pattern
+library(graphics)   # base graphics are loaded by default
+par(mfrow=c(1,1))
+plot(is.na(df[, likert_vars]), main="Missingness matrix (Q1‑Q5)-Fig, 1",
+     ylab="Question", xlab="Respondent index", col=c("black","red"))
+```
+
+**Observations**: NAs:  Columns Q1–Q5 each have a handful of NAs (3.8% - 4.2%). For rows that contain all NAs – these respondents gave no usable answer and should be removed from any quantitative analysis.
+
+**MISSINGNESS**: No systematic pattern (the missingness plot shows scattered red dots at index 1.0), suggesting that data is Missing Completely at Random (MCAR).
+
+**Handling Strategy**:  Completely drop all empty rows *(rowSums(is.na(df[likert_vars])) == 5)*.
+For single missing items, can either impute the respondent’s mean across the remaining items or use pairwise deletion. Because the NAs are a small proportion, listwise deletion of those rows will not materially affect results. However, in this analysis, we will use the former solution.
+
+## 2.3 Nature of Responses by Class and Gender - Tab. 3
+```{r natureResp, fig.height=3.5, fig.width=8.5, echo=FALSE}
+
+## Clean the data – keep rows that have at least 1 non‑missing Likert response 
+df_clean <- df[rowSums(is.na(df[likert_vars])) < length(likert_vars), ]
+
+## Helper: compute mean (ignoring NAs) for each respondent
+df_clean$mean_score <- rowMeans(df_clean[likert_vars], na.rm = TRUE)
+
+## Summary by Gender
+cat("\n=== Mean Likert score by GENDER   ===\n")
+print(
+  aggregate(mean_score ~ gender, data = df_clean,
+          FUN = function(x) round(mean(x),2))
+)
+
+cat("\n=== Distribution of Each Question by GENDER ===\n")
+for (q in likert_vars) {
+  cat("\n--", q, "--\n")
+  tblGendr <- prop.table(table(df_clean[[q]], df_clean$gender), 2)
+  print(format(round(tblGendr, 3), width = 6))
+  #print(round(tblGendr, 3))
+}
+
+## Summary by Class (Freshman‑Senior)
+cat("\n=== Mean Likert score by Class ===\n")
+print(
+  aggregate(mean_score ~ class, data = df_clean,
+            FUN = function(x) round(mean(x),2))
+)
+
+cat("\n=== Distribution of Each Question by CLASS ===\n")
+for (q in likert_vars) {
+  cat("\n--", q, "--\n")
+  #print( prop.table( table(df_clean[[q]], df_clean$class), 2 ) )
+  tblClass <- prop.table(table(df_clean[[q]], df_clean$class), 2)
+  print(format(round(tblClass, 3), width = 6))
+  #print(round(tblClass, 3))
+}
+
+## Cross‑tab of Gender × Class (counts of respondents)
+cat("\n=== Counts by GENDER & CLASS   ===\n")
+#print( table(df_clean$gender, df_clean$class) )
+tblGendClass <- table(df_clean$gender, df_clean$class)
+print(format(round(tblGendClass, 3), width = 6))
+#print(round(tblGendClass,3))
+```
+
+## 2.3 Nature of Responses by Class and Gender - Fig. 2
+```{r natureResp2, fig.height=3.5, fig.width=8.5, echo=FALSE}
+
+## Optional: quick visual check (base graphics)
+par(mfrow=c(2,5))
+boxplot(Q1 ~ gender, data=df_clean, main="Q1 by Gender",
+        ylab="Likert (1‑5)", col=c("#a6cee3","#1f78b4"))
+boxplot(Q2 ~ gender, data=df_clean, main="Q2 by Gender",
+        ylab="", col=c("#a6cee3","#1f78b4"))
+boxplot(Q3 ~ gender, data=df_clean, main="Q3 by Gender",
+        ylab="", col=c("#a6cee3","#1f78b4"))
+boxplot(Q4 ~ gender, data=df_clean, main="Q4 by Gender",
+        ylab="", col=c("#a6cee3","#1f78b4"))
+boxplot(Q5 ~ gender, data=df_clean, main="Q5 by Gender",
+        ylab="", col=c("#a6cee3","#1f78b4"))
+boxplot(Q1 ~ class, data=df_clean, main="Q1 by Class",
+     ylab="Likert (1‑5)", col=rainbow(5))
+boxplot(Q2 ~ class, data=df_clean, main="Q2 by Class",
+        ylab="", col=rainbow(5))
+boxplot(Q3 ~ class, data=df_clean, main="Q3 by Class",
+        ylab="", col=rainbow(5))
+boxplot(Q4 ~ class, data=df_clean, main="Q4 by Class",
+        ylab="", col=rainbow(5))
+boxplot(Q5 ~ class, data=df_clean, main="Q5 by Class",
+        ylab="", col=rainbow(5))
+par(mfrow=c(1,1))
+```
+
+## **ACROSS-QUESTION GENDER PATTERNS (HIGH-LEVEL)**
+**1. Females tend to cluster more around the “Agree” category (4) than males**.
+
+Across Q1–Q5, females show their strongest peaks at category 4 (Agree), often more strongly than males at Q1, Q2, and Q3.
+
+**2. Males show more polarization toward extremes responses: 1 or 5**.
+
+In multiple questions, males report: Higher “Strongly Agree” (5), Slightly higher “Strongly Disagree” (1) in some items.  Example: Q1 and Q3 show males with stronger category 5 peaks.
+
+**3. Males are generally less undecided than females—except at Q2 and Q5**.
+
+Females show: Higher uncertainty in Q2 (ethics); Higher uncertainty in Q5 (AI direction).  This aligns with earlier findings that females display more caution or moral reflection in AI-related judgments.
+
+**4. Across all questions, both genders show clear positive sentiment—but the style differs**.
+
+**Female pattern**: stable, centered, less extreme, more “moderate agreement.”  
+**Male pattern**: more split between moderate and strong agreement, less hesitation.
+
+**Given that Q1 and Q5 propose a more interesting response, the researcher will also look within each of these questions to find insights**.
+
+**Q2 – “I think AI is unethical”**:
+
+- High-Level Within-Question Analysis (Compact, Data-Based)
+
+**Females**: Responses cluster in the mid-positive range:
+
+  - Agree (0.435) is dominant, with Undecided (0.250) also substantial.
+
+  - Strongly Agree (0.076) is present but not high.
+
+  - Pattern → Moderate ethical concern + meaningful uncertainty.
+
+**Males**:
+
+  - Agree (0.372) is dominant, but Strongly Agree (0.195) is much higher than in females.
+
+  - Undecided (0.239) is also high.
+
+  - Pattern → More polarized, with a larger group strongly endorsing the view that AI is unethical.
+
+**Critical Interpretation**
+
+Both groups view AI as somewhat unethical, but: Females show more caution and uncertainty.  Males show greater intensity, with nearly double the Female rate of Strongly Agree.
+
+High undecided levels (~24% both groups) suggest ethical views are not firmly settled, indicating a developing moral landscape.
+
+**Q5 – “AI is going in the right direction”**
+**Females**:
+
+  - Responses split between Disagree (0.348) and Agree (0.326).
+
+  - Strongly Disagree (0.098) is moderate.
+
+  - Overall → Balanced ambivalence with slight negative tilt.
+
+**Males**:
+
+  - Disagree (0.357) is highest.
+
+  - Strongly Disagree (0.071) + Agree (0.214) + Strongly Agree (0.143) produce a more mixed–but still skepticism-leaning profile.
+
+  - Noticeably more males select Neutral (0.214).
+
+**Critical Interpretation**:  
+Both genders lean somewhat skeptical about AI’s direction, but:
+
+  - Females: clearer negative orientation (higher Disagree; lower positive tail).
+
+  - Males: more dispersed, with modest positivity (Agree + Strongly Agree combined ≈ 0.357).
+
+  - The distribution suggests this is the least consensus-driven question, reflecting uncertainty about AI progress, not merely ethics.
+
+## **ACROSS QUESTION ANALYSIS by CLASS**
+**Q1 – “I usually use AI in my studies”**
+
+**Overall trend**: Support is high across all classes, but strength of agreement increases with the class level.
+
+- Freshmen/Sophomores: Strongly Agree = 32% / 24% -> strong use but still mixed.
+
+- Juniors/Seniors: Strongly Agree = 23% / 19%, but Agree becomes dominant, especially for Seniors (56%).
+
+Interpretation: As students advance, AI use becomes more normalized and confident. Seniors shift from extreme positivity to stable, moderate endorsement, implying more intentional use.
+
+**Q2 – “I think AI is unethical”**
+**Overall pattern**: All groups lean toward AI being unethical, but with important differences.
+
+- Freshmen: High early uncertainty (26% “2”, 24% “3”).
+
+- Sophomores: Strongest leaning toward “4 – Agree” (41%), showing heightened ethical concern.
+
+- Juniors: Peak concern (45% Agree).
+
+- Seniors: Most split—more undecided (28% in “2” + “3”) and slightly less extreme.
+
+Interpretation: Ethical concern peaks in the middle years, but Seniors show a more nuanced stance, suggesting increased exposure, reasoning, or disciplinary maturity.
+
+**Q3 – “AI should be used in my homework unconditionally”**
+**Clear pattern**: The higher the class level, the more respondents give Strongly Agree.
+
+- Freshmen→Juniors: Strongly Agree rises from 28% → 36%.
+
+- Seniors: Highest acceptance (39%).
+ Interpretation: Experience leads to greater comfort adopting AI broadly, although Seniors have slightly lower “Agree,” suggesting more caution but still high endorsement.
+
+**Q4 – “I choose not to disclose my AI use”**
+**Key finding**: Disclosure hesitancy differs sharply across classes.
+
+- Freshmen: Most likely to openly admit AI use (55% “5”).
+
+- Sophomores/Juniors: Strong push into “4 – Agree,” suggesting growing caution.
+
+- Seniors: Mixed but still high in nondisclosure (47% “5”).
+ 
+ Interpretation: Disclosure becomes more strategic and less transparent as students progress—possibly due to experience with academic rules, fear of penalties, or social norms in upper classes.
+
+**Q5 – “AI is going in the right direction”**
+**Overall trend**: Confidence shifts with academic maturity.
+
+- Freshmen: Moderate optimism but with substantial uncertainty (27% “2”).
+
+- Sophomores: Most skeptical year (43% “2”).
+
+- Juniors: Optimism jumps (34% “4”, 17% “5”).
+
+- Seniors: Highest confidence (38% “4”).
+
+Interpretation: Belief in AI’s positive trajectory strengthens markedly after sophomore year, suggesting that exposure to real-world academic tools improves trust and clarity.
+
+**Master Summary Across All Questions**
+- Freshmen/Sophomores show mixed, uncertain, and transitional attitudes, especially on ethics and confidence in AI.
+
+- Juniors/Seniors show more coherent, confident, and positive evaluations, with clearer positions and less neutrality.
+
+- Across all questions, the developmental trend is unmistakable: -> early uncertainty -> mid-year ethical concern -> upper-year confident, structured opinions.
+
+
+## 2.4: Next Steps Data Handling -Tab. 4
+```{r nxtStepDataHandling, include=FALSE}
+
+df_clean <- df[rowSums(is.na(df[likert_vars])) < 5, ] #drops rows where all variables are NA.
+#df_clean <- df_clean[, -1]   #oid column removed
+head(df_clean)
+```
+
+
+```{r imputeMissData, include=FALSE}
+
+# Impute isolated missing items with the respondent’s own mean
+
+row_means <- rowMeans(df_clean[likert_vars], na.rm = TRUE)
+for (v in likert_vars) {
+  miss_idx <- which(is.na(df_clean[[v]]))
+  df_clean[miss_idx, v] <- round(row_means[miss_idx])
+}
+
+head(df_clean) #<- df_clean[, -1]   # Remove 1st column
+```
+
+
+```{r outlierDetect, echo=FALSE}
+
+# Outliers - Detect values outside 1‑5 
+out_of_range <- lapply(likert_vars, function(v){
+  which(df_clean[[v]] < 1 | df_clean[[v]] > 5)
+})
+
+names(out_of_range) <- likert_vars
+print(out_of_range)
+```
+**Observationss**:
+- NAs : Single missing values for each respondent are replaced by respondent's row means.  The approach of completely dropping rows with a single missing value will not be used, although this would have negliable analytical effect since the proportion of missing data items is small (< 3%).
+
+- Outliers: No numeric outtliers observd from table 4.  All responses lie within [1, 5].
+
+- After cleanup, the dataset contains 205 items. 
+
+- **The aforementioned collective steps should set a robust next step for further analysis**.
+
+```{r quesResponse, echo=FALSE}
+#remRows <- length(df_clean$oid)
+cat("Number of remaining rows after cleanup:", nrow(df_clean), "\n")
+```
+
+## Step 3: Use of GGplot2
+```{r ggPlotsDtaCleanup, include=FALSE}
+
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(scales)   # for percent_format()
+
+## Fix column‑name quirks
+names(df_clean) <- trimws(names(df_clean))   # remove leading/trailing blanks
+```
+
+
+```{r colorPal, include=FALSE}
+
+# Colour‑blind‑friendly & Professional palette (Okabe‑Ito)
+cbPalette <- c(
+  "#4E79A7",   # muted blue
+  "#F28E2B",   # soft orange
+  "#E15759",   # gentle red
+  "#76B7B2",   # teal‑gray
+  "#59A14F",   # sage green
+  "#EDC949",   # warm gold
+  "#AF7AA1",   # muted purple
+  "#000000"    # black (for text / emphasis)
+)
+```
+
+
+## 3.1: GGPlot Gender Distribution
+```{r genderDist, fig.height=2.5, fig.width=3.5, echo=FALSE}
+
+df <- df_clean
+F_gender <- ggplot(df, aes(x = gender, fill = gender)) +
+  geom_bar(width = 0.7) +
+  scale_fill_manual(values = cbPalette[c(6,7)]) +
+  labs(title = "Survey Respondents by Gender - Fig. 3",
+       x = "Gender",
+       y = "Count",
+       fill = "Gender") +
+  theme_minimal(base_size = 10) +
+  theme(legend.position = "none",
+        plot.title = element_text(face = "bold", hjust = 0.5),
+        
+        # ★ Add boxed border here
+        panel.border = element_rect(color = "black", fill = NA, linewidth = 0.7)
+  )
+F_gender
+```
+
+
+```{r dfcleanReset, include=FALSE, echo=FALSE}
+
+df_clean <- df  # Get copy of df
+
+likert_labels <- c("Strongly Disagree","Disagree","Undecided","Agree","Strongly Agree")
+
+df_clean[likert_vars] <- lapply(df_clean[likert_vars], function(x) {
+  factor(as.numeric(as.character(x)), 
+         levels = 1:5,
+         labels = likert_labels,
+         ordered = TRUE)
+})
+```
+
+
+```{r gendrTable, echo=FALSE}
+
+library(likert)
+library(knitr)
+
+genders <- unique(df_clean$gender)
+gender_summaries <- list()
+
+for (gen in genders) {
+  lik_obj <- likert(df_clean[df_clean$gender == gen, likert_vars])
+  summary_df <- lik_obj$results
+  summary_df$Gender <- gen
+  gender_summaries[[gen]] <- summary_df
+}
+
+# Combine
+summary_by_gender <- bind_rows(gender_summaries)
+names(summary_by_gender)
+
+# Long format
+summary_by_gender_long <- summary_by_gender %>%
+  pivot_longer(
+    cols = c("Strongly Disagree","Disagree","Undecided","Agree","Strongly Agree"),
+    names_to = "Response",
+    values_to = "Percent"
+  )
+
+# Optional: wide table per gender
+summary_by_gender_wide <- summary_by_gender_long %>%
+  pivot_wider(names_from = Response, values_from = Percent)
+
+# Print
+kable(summary_by_gender_wide, digits = 1, caption = "Tabular Responses by Gender - Tab. 5")
+
+```
+
+
+## 3.2: GGplots Class Distribution
+```{r classDist, fig.height=2.5, fig.width=3.5, echo=FALSE}
+
+class_cols <- cbPalette[1:4]   # "#E69F00", "#56B4E9", "#009E73", "#F0E442"
+
+p_class <- ggplot(df, aes(x = class, fill = class)) +
+  geom_bar(width = 0.7) +
+  scale_fill_manual(values = cbPalette[c(3,5,6,7)]) +
+  labs(title = "Survey Responsed by Class - Fig. 4",
+       x = "Class",
+       y = "Count",
+       fill = "Class") +
+  theme_minimal(base_size = 10) +
+  theme(legend.position = "none",
+        plot.title = element_text(face = "bold", hjust = 0.5),
+        panel.border = element_rect(color = "black", fill = NA, linewidth = 0.7)
+        )
+p_class
+```
+
+
+```{r classTable, echo=FALSE}
+
+library(likert)
+library(dplyr)
+library(tidyr)
+library(knitr)
+
+likert_vars <- c("Q1","Q2","Q3","Q4","Q5")
+
+# Create separate likert objects per class
+classes <- unique(df_clean$class)
+
+# List to store results
+class_summaries <- list()
+
+for (cls in classes) {
+  lik_obj <- likert(df_clean[df_clean$class == cls, likert_vars])
+  summary_df <- lik_obj$results
+  summary_df$Class <- cls  # add class column
+  class_summaries[[cls]] <- summary_df
+}
+
+# Combine into one data frame
+summary_by_class <- bind_rows(class_summaries)
+
+# Long format for compact table
+summary_by_class_long <- summary_by_class %>%
+  pivot_longer(
+    cols = c("Strongly Disagree","Disagree","Undecided","Agree","Strongly Agree"),
+    names_to = "Response",
+    values_to = "Percent"
+  )
+
+# Optional: wide table per class
+summary_by_class_wide <- summary_by_class_long %>%
+  pivot_wider(names_from = Response, values_from = Percent)
+
+# Print
+kable(summary_by_class_wide, digits = 1, caption = "Tabular Responses by Class - Tab. 6")
+```
+
+
+```{r newGenClassTab, echo=FALSE}
+
+#To be compared to previous Class Table
+likert_levels <- c("Strongly Disagree","Disagree","Undecided","Agree","Strongly Agree")
+likert_vars   <- c("Q1","Q2","Q3","Q4","Q5")
+
+# Make sure factors have consistent levels
+for(v in likert_vars){
+  df_clean[[v]] <- factor(df_clean[[v]], levels = likert_levels)
+}
+
+# Unique classes
+classes <- unique(df_clean$class)
+
+class_tables <- list()
+
+for(cls in classes){
+  sub <- df_clean[df_clean$class == cls, ]
+  
+  freq_list <- lapply(likert_vars, function(v) table(sub[[v]]))
+  tbl <- do.call(cbind, freq_list)
+  rownames(tbl) <- likert_levels
+  
+  class_tables[[as.character(cls)]] <- tbl
+}
+
+class_tables
+```
+
+
+## 3.3 GGPlot: Likert‑Question Distributions - Fig. 5
+```{r ggPlot, fig.width=20, fig.height=9, echo=FALSE}
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(scales)
+
+cbPalette_prof <- c(
+  "#4E79A7",   # muted blue
+  "#F28E2B",   # soft orange
+  "#E15759",   # gentle red
+  "#76B7B2",   # teal‑gray
+  "#59A14F",   # sage green
+  "#EDC949",   # warm gold
+  "#AF7AA1",   # muted purple
+  "#000000"    # black
+)
+
+df <- df_clean
+likert_vars <- c("Q1","Q2","Q3","Q4","Q5")
+
+# Ensure factors have correct levels
+likert_labels <- c("Strongly Disagree","Disagree","Undecided","Agree","Strongly Agree")
+df[likert_vars] <- lapply(df[likert_vars], function(x) {
+  factor(as.character(x),
+         levels = likert_labels,
+         ordered = TRUE)
+})
+
+# Long format
+df_long <- df %>% 
+  select(all_of(likert_vars)) %>% 
+  pivot_longer(cols = everything(),
+               names_to = "question",
+               values_to = "response")
+
+# Percent per question
+df_pct <- df_long %>%
+  group_by(question, response) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  mutate(pct = n / sum(n))
+
+# Plot
+p_likert <- ggplot(df_pct, aes(x = response, y = pct, fill = response)) +
+  geom_col(width = 0.7, colour = "white", na.rm = TRUE) +
+  scale_y_continuous(labels = percent_format(accuracy = 1),
+                     expand = expansion(mult = c(0, 0.05))) +
+  scale_fill_manual(values = cbPalette_prof[1:5]) +
+  facet_wrap(~question, ncol = 5, scales = "fixed",
+             labeller = as_labeller(c(
+               Q1 = "Q1:AI Use in Studies",
+               Q2 = "Q2:AI is Unethical",
+               Q3 = "Q3:AI Unconditional Use",
+               Q4 = "Q4:AI Hidden Use",
+               Q5 = "Q5:AI Right Direction"
+             ))) +
+  labs(title = "Distribution of Responses for Each Likert Item",
+       x = "Response Category",
+       y = "% Respondents",
+       fill = "Response") +
+  theme_minimal(base_size = 13) +
+  theme(
+    panel.border = element_rect(colour = "black", fill = NA, size = 0.6),
+    panel.spacing = unit(0.8, "lines"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    strip.background = element_rect(fill = "#f0f0f0"),
+    strip.text = element_text(face = "bold"),
+    plot.title = element_text(face = "bold", hjust = 0.8)
+  ) +
+  annotate("segment", x = -Inf, xend = Inf,
+           y = -Inf, yend = -Inf,
+           colour = "grey70", size = 0.4, linetype = "solid")
+
+# Render plot
+p_likert
+```
+
+## 4: GGPlot2 Result Reports for Step 3: Fig. 3 & Tab 5 
+## **4.1 Gender Analysis for 3.1**: 
+- The sample consists of 42% female and 58% male respondents. The distribution is fairly balanced, ensuring that gender‑based comparisons will have sufficient power. This confirms a modest gender imbalance. Further comparison (e.g., attitudes by gender) should weight or consider this difference in sample count per gender.
+- The Bar heights are integer counts (71 vs 115) - raw scores. This makes it easy to see the real sample size, which is useful when reporting statistical power or confidence intervals. 
+
+## **4.2 Class Analysis for 3.2 Fig 4 & Tab. 6**
+- Respondents are spread across the four academic levels, with the largest group being Juniors (~ 65=28%) followed by Sophomores (~58), Freshman (50) and the smallest, Senior (32). Note that the count for Sophomores about doubles that of Seniors. The chronological ordering allows for the examination of how attitudes evelve toward AI as students progress through their programs.
+
+- The ordered class levels from Freshman to Senior give a chronological flow that mirrors the academic pipeline.  The single percentage count for Seniors (9%) limits the ability to draw robust conclusions about their specific attitudes; any subgroup analysis involving them will have larger Confidence Intervals.
+
+## **4.3 Analysis for 3.3 Tab. 5 Plot/Table**
+## **4.3.A Q1-Q5 Analysis by GENDER (% Distributions)**
+
+- Males consistently show higher “Strongly Agree” percentages across Q1–Q4 -> more decisive positivity.
+
+- Females cluster more to “Agree” rather than “Strongly Agree”, reflecting *moderated positivity*.
+
+- Q5 is the only item with substantial negativity, with females expressing stronger disagreement and males expressing more uncertainty.
+
+#### **Q1**:
+- **Females**: Very highly *Agree* (58.7%), moderate *Strongly Agree* (19.6%).
+
+- **Males:** Lower *Agree*ment (40.7%) but much higher *Strongly Agree* (29.2%).
+
+- **Pattern:** Both genders are positive, but males are more polarized toward Strongly Agree while females cluster toward *Agree*.
+
+#### **Q2**
+- **Females:** Strong *Disagree/Undecided* presence (23.9% + 25.0%). Low *Strongly Agree* (7.6%).
+
+- **Males:** Similar pattern, but more positive overall: higher *Agree* (37.2% vs 43.5%) and *Strongly Agree* (19.5%).
+
+- **Pattern:** *Both groups show mixed attitudes, but males lean more positive than females.*
+
+#### **Q3**
+- **Females:** Strong positive orientation with high *Agree* (52.2%) and solid *Strongly Agree* (27.2%).
+
+- **Males:** Even stronger positivity: *Strongly Agree* 37.2% (10 points higher).
+
+- **Pattern:** *Both genders supportive; males again show a stronger positive shift by 10%.*
+
+#### **Q4**
+- **Females:** Heavily positive—*Agree* (44.6%) and *Strongly Agree* (41.3%).
+
+- **Males:** Even more positive— *Agree* 47.8%; *Strongly Agree* 46.0%.
+
+- **Pattern:** *Universal strong approval, but males slightly surpass females at the highest level.*
+
+#### **Q5**
+
+- **Females:** More disagreement: *Disagree* (34.8%) and *Strongly Disagree* (9.8%).
+- **Males:** Also high *Disagree* (35.4%) but *Undecided* notably higher (21.2% vs 8.7%).
+- **Pattern:** *Both genders show overall dissatisfaction or uncertainty; females reject more strongly while males hesitate more (higher Undecided) rating.*
+
+#### **Additional Overall Gender Trends**
+**Males basically favoured Q1-Q4 more positively while females sided more to simply agree showing a moderate positivity.  Q5 is the only item with substantial negativity** from more females and males expressing more uncertainty. Is this because females: have lower prior exposure to technical tools (coding experience, hands-on experiences, feeling less confident) on average or are more aware of algorithm bias (under-representation in AI, unequal impacts on hirings, education,etc) among other social rationale?
+
+## **4.3.B Q1-Q5 Analysis by CLASS based in (% Distributions) - Tab. 6** 
+#### **Q1 — “AI Use in Studies”**
+- **Freshmen**: Mostly **Agree / Strongly Agree** - > positive attitude about using AI for academic work.
+
+- **Sophomores**: Still positive, but *slightly more Undecided* than Freshmen.
+
+- **Juniors**: Show **mixed responses** -> rising caution about academic reliance on AI.
+
+- **Seniors**: Hold the highest **Disagree / Undecided** values -> more skeptical or selective about AI use.
+
+#### **Q2 — “AI is Unethical”**
+- **Freshmen**: Modetate disagreement citing -> many welcomed **disagreement that AI is unethical**. Scores show a near balance disagree (26) and undecided (24) response to this question.
+
+- **Sophomores**: Slight uptick in **Undecided**, but still leaning toward “AI is not unethical.”
+
+- **Juniors**: More evenly spread out responses -> there is growing ethical uncertainty.
+
+- **Seniors**: Highest **Disagree** sector to note that AI has ethical concerns. Is this because of their longer interaction with the tool or their understanding of its policy usage?
+
+#### **Q3 — “Unconditional Use of AI”**
+- **Freshmen**: Generally **positive** toward broad/unconditional use.
+
+- **Sophomores**: Still positive but more **Undecided**.
+
+- **Juniors**: Clear rise in **neutral and disagreeing** responses. This is no surprise that there is a percentage in disagreement as AI could be seen as a useful tool in their arsenal.  The fact that there is a rise in the neutral response is surprising; perhaps fear to log their real sentiments.
+
+- **Seniors**: Responses show the largest spread -> strongest doubts about unconditional AI use. This is a noted expectation since this group might be steeped in the traditional ways of learning (tables, abacus, calculators,etc).
+
+#### **Q4 — “Students Should Be Able to Use AI Without Disclosure”**
+- **Freshmen**: Highest agreement -> little issue with undisclosed AI use. This shows the evolving mindset towards technology in education with the GenZ sector.
+
+- **Sophomores**: More neutrality compared to Freshmen. Perhaps Sophomores have had more exposure to academic integrity rules, making them more careful and less willing to take a strong stance, or they may be comfortable using AI but hesitant to publicly disclose, balancing perceived benefits with potential academic consequences,  or after completing more coursework, they better understand that AI use can be context-dependent, leading to neutral/ambivalent responses instead of clear agree/disagree positions.
+
+- **Juniors**: Increasing concern -> more **Disagree** and **Undecided**. This group appears torn between the concept of academic integrity.
+
+- **Seniors**: * Strongest **Disagree** -> disclosure matters more to them. Because of their longer exposure to academic policies, and perhaps knowing the repercussions for non-compliance, there is more respect for policy and academic honesty.
+
+#### **Q5 — “AI is Leading Us in the Right Direction”**
+- **Freshmen**: Very upbeat; mostly *Agree / Strongly Agree*.  For this sect, AI might be the 'new boy on the block', hence the excitement hype.
+
+- **Sophomores**: Slightly more reserved but still highly positive.  Following from Q4, this is no surprise. The previous access to higher education has begun to set in - so much caution is displayed.
+
+- **Juniors**: More moderate, showing rising uncertainty. This group has the lowest agreement rate of all (51%) to this question. 
+
+- **Seniors**: Still positive overall but with **noticeably more cautious**. 
+
+**OVERALL CLASS TRENDS**: 
+- Freshmen: We have more extreme responses (Strongly Agree / Strongly Disagree) which indicates stronger, less moderated opinions.  This is typical of early-year students who are still forming academic attitudes.
+
+- Sophomores: These tend to show more *Agree* and *Disagree* feedbacks, and have fewer extremes responses.  This suggests moderate, emerging critical thinking signalling a 'play it safe' mode.
+
+- Juniors:  They more *Agree or Strongly Agree* with fewer *Undecided* showing their increased confidence in opinions.
+
+- Seniors:  Often more *Undecided / Agree* replies, fewer extremes indicating nuanced, and balanced judgment given their age and length of study time.
+
+- Freshmen → Sophomore → Junior → Senior shows a clear progression from high enthusiasm to increasing caution or critical evaluation on the use of AI.
+
+- Ethical-related questions (Q2 and Q4) show the greatest variation by these classes.
+
+- The question about AI being “in the right direction” (Q5) remain mostly positive across all classes, but Seniors still show more moderation in their replies.
+
+*Summarily, for each question, the analysis concludes that*:  
+**Q1 Overall**: Support declines steadily with higher class.
+
+**Q2 Overall**: Ethical concerns **increase** with class standing.
+
+**Q3 Overall**: Support for unrestricted AI use **falls steadily** as class level rises.
+
+**Q4 Overall**: Normative judgment grows stronger; seniors are least permissive.
+
+**Q5 Overall**: Optimism remains across all classes but declines with seniority.
+
+## 4.3.C **Q1-Q5 Analysis - Fig. 5**:
+The figure presents percentage distributions of responses for each Likert item (Q1–Q5), allowing visual comparison of disagreement, neutrality, and agreement both **within** and **across** the five AI-attitude responses.
+
+Overall Summary for Reporting: Across the five items, respondents show generally positive attitudes toward AI when connected to personal or academic use, especially in Q1 and Q3. They also express a strong desire for transparency (Q4). However, concerns emerge around broader ethical issues (Q2), and respondents express notable skepticism about whether AI development is progressing positively for society (Q5). Neutral responses appear most often for ethics-related items, suggesting uncertainty rather than indifference. 
+
+**Results**: 
+Analysis of the Likert response distributions across the five survey items revealed clear variation in levels of participant agreement. **Q1** demonstrated a strongly positive response pattern, with the majority selecting Agree or Strongly Agree and relatively few negative responses. **Q2** showed a more mixed profile, characterized by a sizable undecided group and moderate levels of disagreement, although positive responses still dominate overall. **Q3** again reflected a pronounced positive trend, with high agreement and minimal disagreement. **Q4** elicited the strongest consensus, with overwhelmingly positive responses and almost no negative evaluations, indicating broad alignment among participants. In contrast, **Q5** differed from the preceding items; it was the only question where disagreement slightly exceeded agreement, suggesting greater variability or uncertainty in views related to this question.  Generally, the response patterns indicate strong agreement on most dimensions assessed, with Q2 and especially Q5 reflecting comparatively more divided perspectives.
+
+From the Multi-Panel Likert Plots analysis will firstly report on responses *within a question set and then across question sets*.
+
+- ## **Within Q1-Q5 Analysis**
+**Q1: AI Use in Studies**
+- Agreement dominates (“Agree” ≈ 10%, “Strongly Agree” ~ 5%).
+
+- Neutral responses (~3%) appear modest.
+
+- Very low disagreement.
+
+Interpretation: Students generally support using AI in their academic work, with minimal opposition.
+
+**Q2: AI is Unethical**
+- Highest bar is “Agree”, indicating many respondents perceive some ethical problems with AI.
+
+- Moderate levels of “Undecided” and “Disagree”.
+
+- Small level of “Strongly Disagree”.
+Interpretation: Ethical concerns are present but not extreme—many students think AI has ethical issues, but strong condemnation is rare.
+
+**Q3: AI Unconditional Use**
+- Agreement again very high (“Agree” > 9%, “Strongly Agree” > 7%).
+
+- Relatively low neutral and disagreement categories.
+
+Interpretation: Respondents largely support AI's use without strict limitations, implying a comfort level with broad AI adoption.
+
+**Q4: AI Hidden Use**
+- Very high “Agree” and “Strongly Agree” rates.
+
+- Very low neutrality.
+
+- Almost no disagreement - indicating that transparency and openness about the use of AI is not a concern: comfort, no threat of stigma or fear is accepted.
+
+Interpretation: Students are highly concerned about undisclosed or hidden AI use—transparency is a priority.
+
+**Q5: AI Right Direction**
+
+- Disagreement is the largest category.
+
+- Moderate neutrality.
+
+- Agreement exists but is not as strong as in other items (Q1, Q3, Q4).
+
+Interpretation: Respondents are uncertain or pessimistic about whether AI is moving society in the “right direction.”
+
+- ## Across Q1-Q5 Analysis
+
+**1. Strongest overall agreement**
+Q1 (AI in studies), Q3 (Unconditional use), and Q4 (Hidden use transparency).  These items show consistent acceptance or concern, indicating students: Embrace AI’s usefulness,want transparency, and support broad application.
+
+**2. Strongest disagreement:**
+Q5 (AI moving in the right direction) - Respondents are less confident about the societal direction of AI than about their personal use. High disagreement is also seen in Q2 in regards to the unethical disposition of AI. 
+
+**3. Most polarizing item**
+Q2 (AI unethical) - Contains a wide spread across disagreement, neutrality, and agreement—reflecting mixed or unresolved ethical views.
+
+**4. Consistent low “Strongly Disagree” levels**
+Across all items, strong rejection is rare.  The response pattern is tilted toward moderate or positive positions, not extremes.
+
+**Tab. 6: Total counts of agreement per Question**
+```{r questTable, echo=FALSE}
+
+# Defined Likert levels in order
+likert_levels <- c("Strongly Disagree", "Disagree", "Undecided", "Agree", "Strongly Agree")
+
+# Ensure all Q(i) are factors with those levels
+likert_vars <- c("Q1", "Q2", "Q3", "Q4", "Q5")
+
+for(v in likert_vars){
+  df_clean[[v]] <- factor(df_clean[[v]], levels = likert_levels)
+}
+
+# Create frequency table for each item
+freq_list <- lapply(likert_vars, function(v) table(df_clean[[v]]))
+
+# Combine into one table
+quest_table <- do.call(cbind, freq_list)
+
+# Add row names (Likert categories)
+rownames(quest_table) <- likert_levels
+
+# Print
+quest_table
+```
+Values in the table show the reported counts for each question.  Overall, we can conclude:
+
+- Q1: Has a strongly positive response pattern (~150 about 55%) which outweighs negative by nearly 9 to 1. This perhaps speaks to reality of where education is today and the embrace of AI as a supporting tool.  The distribution is right skewed toward a positive attitude.
+ 
+- Q2: Is mixed in feedback, with a large undecided citing (~35%) and a secondary pattern of roughly equal percentages of “Disagree” and “Agree” . Still more positive than negative, but uncertainty is high (50). This question speaks to thoughts of unethical use of AI.  The overall shape is nearly flat, indicating ambivalence.
+
+- Q3: Is very strongly positive (165), second only to Q4 (111). This question correlates well with Q1.  The fact that AI is reportedly used (Q1) in such large numbers, shows that students have little reservation using it without being checked -  unconditionally. In terms of percentage, about (45%) Agree; a moderate “Strongly Agree” response to this question.  Though the distribution is right skewed, it is less extreme than Q1.
+
+- Q4: Shows overwhelming agreement score.  Negative responses are extremely rare.  This is the strongest positive consensus in the entire dataset. The question, choosing not to disclose AI use, shows that students value their rights in divulging information even surrounding issues relevant to AI.  There is a noticeable “Strongly Agree” agreement among Seniors. The right skewness shape supports the willingness to not conceal usage.
+
+- Q5: The only item where disagreement exceeds agreement.  Negative responses (89) slightly outnumber positive (84), but the undecided feedback remains sizable (32). These scores show an almost split decision at this question.  It would be interesting what final leaning the 'undecideds' would choose if pressed for a 'for or against' decision. 
+
+```{r include=FALSE}
+sum(is.na(df$oid))   # should be 0 if every respondent has an ID
+```
+
+## Step 5: Data Cleaning & Parsing
+#### **5.a: Factor Replacement of Numbers - Tab. 7**
+```{r factReplacement, echo=FALSE}
+
+library(knitr)
+
+# Likert labels and numeric values
+likert_labels <- c("Strongly Disagree", "Disagree", "Undecided", "Agree", "Strongly Agree")
+likert_values <- 1:5
+
+# Combine into a horizontal table
+likert_horizontal <- rbind(likert_labels, likert_values)
+
+# Convert to data frame for nicer formatting
+likert_horizontal_df <- as.data.frame(likert_horizontal, stringsAsFactors = FALSE)
+
+# Print without row/column markers
+kable(likert_horizontal_df, col.names = NULL, row.names = FALSE, caption = "Likert Scale Mapping")
+```
+
+#### **5.b: Ordered class - Tab. 8**
+```{r ordClass, echo=FALSE}
+
+# Using the reordered class factor from before
+df_clean$class <- factor(df_clean$class, levels = c("Freshman", "Sophomore", "Junior", "Senior"), ordered = TRUE)
+
+# Check that all levels are represented inclusding NA
+table(df_clean$class, useNA = "ifany")
+```
+
+
+#### **5.c: Verification of All Levels Represented - Tab. 9**
+```{r ordClassResp, echo=FALSE}
+
+# Random Class factor
+df_clean$class <- factor(df_clean$class, levels = c("Freshman", "Sophomore", "Junior", "Senior"), ordered = TRUE)
+
+# Likert questions
+likert_vars <- c("Q1", "Q2", "Q3", "Q4", "Q5")  
+likert_labels <- c("Strongly Disagree", "Disagree", "Undecided", "Agree", "Strongly Agree")
+
+for (v in likert_vars) {
+  
+  # Ensure factor with correct order
+  df_clean[[v]] <- factor(df_clean[[v]], levels = 1:5, labels = likert_labels, ordered = TRUE)
+}
+
+# Verification: print levels of Class factors in one line
+sapply(c("class", likert_vars), function(x) levels(df_clean[[x]]))
+
+# Check that all levels are represented
+#df_clean 
+```
+
+#### **5.d: Identical Order of Class and Q(i) - Tab. 10**
+```{r identOrder, echo=FALSE}
+
+# Random Class factor
+df_clean$class <- factor(df_clean$class, levels = c("Freshman", "Sophomore", "Junior", "Senior"), ordered = TRUE)
+
+# Likert questions
+likert_vars <- c("Q1", "Q2", "Q3", "Q4", "Q5")  
+likert_labels <- c("Strongly Disagree", "Disagree", "Undecided", "Agree", "Strongly Agree")
+
+for (v in likert_vars) {
+  
+  # Ensure factor with correct order
+  df_clean[[v]] <- factor(df_clean[[v]], levels = 1:5, labels = likert_labels, ordered = TRUE)
+}
+
+# Verification: print levels of all factors in one line
+sapply(c("class", likert_vars), function(x) levels(df_clean[[x]]))
+```
+
+#### **5e: Q4 Ordering Verification - Tab. 11**
+```{r q4Order, echo=FALSE}
+
+# Likert questions
+likert_vars <- c("Q1", "Q2", "Q3", "Q4", "Q5")  
+likert_labels <- c("Strongly Disagree", "Disagree", "Undecided", "Agree", "Strongly Agree")
+
+# Convert to ordered factors
+for (v in likert_vars) {
+  df_clean[[v]] <- factor(df_clean[[v]], levels = 1:5, labels = likert_labels, ordered = TRUE)
+}
+
+# Compact single-line output of levels for all questions
+sapply(likert_vars, function(x) paste(levels(df_clean[[x]]), collapse = " | "))
+
+```
+
+## Step 6. Likert Plots & Tables
+```{r analysSetUp, include=FALSE}
+
+## Reset data variables for further analysis
+likert_labels <- c("Strongly Disagree", "Disagree", "Undecided", "Agree", "Strongly Agree")
+
+for (v in likert_vars) {
+    df_clean[[v]] <- factor(
+        as.numeric(df[[v]]),        # pull the raw numeric values
+        levels = 1:5,               # match original numeric codes
+        labels = likert_labels,     # replace with text labels
+        ordered = TRUE
+    )
+}
+```
+
+
+```{r pltAnalSetup, include=FALSE}
+
+library(likert)
+library(ggplot2)
+
+# Subset Likert questions
+likert_vars <- c("Q1","Q2","Q3","Q4","Q5")
+likert_data <- df_clean[likert_vars]
+
+# Ensure ordered factors with identical levels
+likert_levels <- c("Strongly Disagree","Disagree","Undecided","Agree","Strongly Agree")
+for (v in likert_vars){
+  df_clean[[v]] <- factor(df_clean[[v]], levels = likert_levels, ordered = TRUE)
+}
+
+# Create likert object
+likert_obj <- likert(likert_data)
+```
+
+## 6.A.1 Bar, Density & Heat Plots of Q1-Q5 - Fig. 6
+```{r likbarPlot, fig.height=3.5, fig.width=6.5, echo=FALSE}
+
+plot(likert_obj, type = "bar") +
+  ggtitle("AI Survey Questions (Bar Plot)") +
+  theme(plot.title = element_text(hjust = 0.5, face="bold"),
+        axis.text.x = element_text(angle=30, hjust=1))
+
+plot(likert_obj, type = "density") +
+  ggtitle("AI Survey Questions (Density Plot) - Fig. 7") +
+  theme(plot.title = element_text(hjust = 0.5, face="bold"))
+
+plot(likert_obj, type = "heat") +
+  ggtitle("AI Survey Questions (Heat Plot) - Fig. 8") +
+  theme(plot.title = element_text(hjust = 0.5, face="bold"))
+```
+
+## 6.A.2 Table of Q1-Q5 Responses by % - Tab. 12
+```{r overallAnalTab, echo=FALSE}
+
+library(tidyr)
+library(dplyr)
+library(knitr)
+
+# Use the results data frame
+summary_df <- likert_obj$results
+
+# Convert to long format for pivoting or analysis
+summary_long <- summary_df %>%
+  pivot_longer(
+    cols = -Item,
+    names_to = "Response",
+    values_to = "Percent"
+  )
+
+# Optionally, pivot wider to show one row per item and columns as responses
+summary_wide <- summary_long %>%
+  pivot_wider(names_from = Response, values_from = Percent)
+
+# Print nicely in R Markdown
+kable(summary_wide, digits = 1, caption = "Comparative Likert Responses Across Questions")
+
+```
+
+**All plots and the included table are reporting feedback for all questions. All reporting take-aways tell a consistent story: positive sentiment toward AI across all questions, with Q3 and Q4 showing slightly more uncertainty**. 
+
+## 6.A Plot Analyses
+
+## **6.A.1 Bar Plot Analysis**: 
+- Shows horizontal stacked percentages of responses for each question (Q1–Q5) which is excellent for comparing proportions across questions. For a more compact and better understand of our analysis reporting, **Disagree** means the number of responses who either *disagree or strongly disagree* and **Agree** is for counts that *Agree or Strongly Agree*.  
+
+**Observation**: Most questions have concentrations around “Agree” and “Strongly Agree”, with few “Strongly Disagree” responses across all questions.
+
+**Analysis**: Respondents are generally positive (combined totals of agree and strongly agree) toward AI, but some uncertainty exists, especially on Q2 (24%) which have slightly higher “Undecided” percentages.
+
+#### **BARPLOT Results: Across-Question Insights**
+Across all five Likert items, the plot shows **consistently combined high levels of agreement**, (*Agree* + *Strongly Agree*) dominating every question, though the **strength and distribution of disagreement varies substantially across items**.
+
+#### **Strongest Positive Consensus (Q4, Q3, Q1)**
+- **Q4 (Hidden Use of AI)** shows the **strongest endorsement** (≈90% combined agreement).  This Indicates a strong norm against transparency/acceptability perceptions regarding AI use.
+- **Q3 (Unconditional Use)** also shows high agreement (~80%) of AI usage in homework, **but higher undecided levels (14%) than Q4 (7%)** - a 2:1 ratio - suggesting conditional support but with reservations.
+- **Q1 (AI Use in Studies)** aligns with the general acceptance trend (~74%) implying that students broadly support using AI academically.
+ 
+**Similarity:**
+These three items share **minimal disagreement**, modest undecided proportions, and large positive segments. This again signifies a unified positive stance on AI’s role *when framed as a practical or normative tool*.
+
+#### **Moderate Consensus, Clear Polarization (Q2)**
+- **Q2 (AI is Unethical)** is the **most polarized** item.
+
+   - Large “Disagree” block (~21%).
+   
+   - Still over 50% either agree (agree+strongly agree) or strongly agree and 45% Undecided.
+
+**Difference:**
+Unlike Q1, Q3, or Q4, Q2 includes a **substantial critical segment**—students disagreeing with the idea that AI is unethical, creating a split moral perspective. This means that the ethics question introduces tension which is absent from practical or usage-based items.
+
+#### **Lowest Agreement & Highest Opposition (Q5)**
+- **Q5 (AI Right Direction)** shows the **weakest positive support** (~41%).
+- Very large “Disagree” category (≈43%). This is the only item where disagreement outweighs agreement.
+
+**Difference:**
+Q5 reflects **uncertainty and dissatisfaction about AI’s societal trajectory**, contrasting sharply with the positivity ratings on academic/individual use.
+
+#### **Overall Pattern Summary**
+1. **Strong Clustering:** Q1, Q3, Q4 form a cohesive cluster of **broad approval**.
+
+2. **Moral Ambiguity:** Q2 reveals **divergent ethical beliefs**, with a notable dissenting minority.
+
+3. **Societal Skepticism:** Q5 stands out as the **only negatively leaning item**, showing **societal apprehension** even among AI-supportive respondents.
+
+4. **Directional Insight:** Students are **comfortable using AI personally**, **less certain ethically**, and **skeptical about AI’s broader societal path**.
+
+
+## **6.A.2 Density Plot Analysis**: 
+- Shows the distribution of responses across all questions as smooth curves and is useful for seeing overall tendencies rather than exact percentages.
+
+- Observation: With exception of Q5, most of the peaks are aligned at the "Agree" mark, with smaller bumps at the  “Undecided” mark - supporting trend of the BarPlot.
+
+- Analysis: This reinforces that the overall response distribution is skewed toward agreement, with few strong disagreements. 
+
+## **6.A.3 Heat Plot Analysis**: 
+- Uses color intensity to show response concentration per question. Darker shades represent higher agreements (positives); lighter ones represent higher disagreements (negatives). Heatmap helps quickly identify patterns and deviations in responses.
+
+- Observation: Darker shades with larger percentages appear in the “Agree” category, lighter shades in “Strongly Disagree.” This affirms the insight in the case of the Bar Plot.
+
+- Analysis: Confirms overall trends of other plots — positive sentiment dominates, and Q3 and Q4 show more variation across levels: displayed by more color variation. 
+
+## 6.B: Plots of Q1-Q5 by Gender
+```{r gendrMalePlot, fig.height=4.5, echo=FALSE}
+
+# Male
+#likert_male <- likert(df_clean[likert_vars], grouping = df_clean$gender == "Male")
+ likert_male <- likert(df_clean[df_clean$gender == "Male", likert_vars])
+
+plot(likert_male, type = "bar") +
+  ggtitle("AI Survey: Male Responses (Bar Plot) - Fig. 9") + theme(plot.title = element_text(hjust=0.5))
+
+plot(likert_male, type = "density") +
+  ggtitle("AI Survey: Male Responses (Density Plot)- Fig. 10") + theme(plot.title = element_text(hjust=0.5))
+
+# Heat Plot defined differently, filtered dataset, no grouping
+likert_male_only <- likert(df_clean[df_clean$gender=="Male", likert_vars])
+plot(likert_male_only, type = "heat") +
+  ggtitle("AI Survey: Male Responses (Heat Plot) - Fig. 11") + theme(plot.title = element_text(hjust=0.5))
+```
+
+## 6.B: Analysis on Q1-Q5 by Males
+## **6.B.1 Bar plot Analysis Q1-Q5 (Males) - Fig. 9**:
+
+This plot is best suited for exact counts/comparisons.  They allow easy comparison across groups, in this case, Q1-Q5.
+
+- Most male respondents chose “Agree” across questions, with smaller percentages in “Undecided” and very few in “Strongly Disagree.”
+
+- Their total undecided rate has double digits for Q1, Q2, and Q5 ranging from 10% to 42%.  Q5, the question netting the 42% speaking to the negative direction in which AI is headed and begs for added insights.  For example, what would be the ages and economic status of males who support this claim.
+
+- Q1, Q3 and Q4 have high positive percentage ratings ranging from 70%(Q1) to 94% (Q4).  The fact that 70% use AI in their studies and 10% rated its use unfavorably, leaves a moderate percentage (20%) undecided.  This needs further analysis: was it the wording of the question with the inclusion of the word 'usually' that made a recording difference? 
+
+- Q2, thoughts on the ethics of AI, this question presents almost a split view with about 57% agreeing to the unethical use of AI and a relatively high rate (24%) being undecided.  This split view response 
+reflects uncertainty about emerging norms: AI ethics is a rapidly evolving topic, and many students may feel they lack clear guidance on what counts as “ethical” or “unethical” use. The relatively high undecided rate suggests that males may be weighing both the benefits and risks simultaneously—recognizing AI’s academic usefulness while being unsure about fairness, authorship, or academic integrity implications. This mixed landscape produces hesitation and a nearly divided stance rather than a strong, unified view.
+
+
+- Negative double percentage digits are seen for Q2 and Q5. These questions, can be counter-checked with each other.  With 36% agreeing that AI is headed in the right direction and 57% citing that is it unethical.  The expectation is that a lower percentage should have been logged to support that AI is going forward, positively.  If these males hold such strong unethical feelings why did a higher number not indicate its wrong direction? Further examination of this needs to be followed.
+
+**Summary**: Males show a generally positive attitude toward AI, though Q3 (AI being used unconditionally for homework) has a slightly higher “Undecided” proportion compared to other questions. 
+
+## **6.B.2: Density Plot Analysis Q1-Q5 (Males) - Fig. 10**:
+A Density plot shows where values are concentrated, how they are spread, and the shape of the dataset — compared to a smooth histogram that is easier to compare across groups.  It highlights overall response tendency across questions, rather than exact counts.
+
+Observation: Peaks occur at the “Agree” mark for Q1, Q3 and Q4, with minor density at the “Undecided” Q5, and very low density at “Strongly Disagree.”
+
+- Responses for Q4 (choice of disclosing use of AI) is the only plot that seems to exhibit normalcy.
+
+Analysis: Overall male responses are skewed toward agreement, with minimal disagreement.
+
+**Q1 – Clear Positive Lean With Moderate Spread**: The density curve peaks around 'Agree', indicating this is the most common response.  A smaller but noticeable tail toward 'Strongly Agree' suggests some males endorse the statement more strongly.  Minimal left-side density (Disagree / Strongly Disagree) implies very few negative opinions.
+
+Interpretation: Males are generally positive on Q1, though not uniformly strongly positive.
+
+**Q2 – More Polarization Than Q1**: Density often shows two noticeable areas: a main peak near the 'Agree' mark with a secondary rise near 'Undecided' point.  This indicates mixed certainty—while most agree, the existence of a subgroup  with varying views is evident. 
+
+Interpretation: Male responses are still positive overall, but Q2 appears to trigger more variability and less uniform agreement.
+
+**Q3 – Strong Positive Consensus**: The curve usually becomes sharply peaked around 'Agree/Strongly Agree'.  
+Very little density is in the lower categories, and the spread is narrower than those of Q1 or Q2.
+
+Interpretation: Males show stronger and more concentrated support here, indicating broad alignment on Q3.
+
+**Q4 – Highest Intensity of “Strongly Agree”**: The density shifts rightward, often showing the strongest peak in 'Strongly Agree' among all questions.  'Agree' still contributes meaningfully, but the right tail dominates the distribution.  Almost no density appears at the low categories.
+
+Interpretation: Q4 generates the strongest endorsement among male respondents.
+
+**Responses to Q5 (Direction of AI)**: is a broader and flatter plot, indicating more disagreement and neutrality than in earlier questions.  Agreement is still dominant but not overwhelmingly; Undecided and Disagree have more visible density.
+
+Interpretation: Males are positive overall for Q5, but less certain and more divided than for Q3 or Q4.
+
+**TAKEWAY**:
+Male respondents are mostly positive toward AI, especially in Q1, Q2, and Q5.  In Q3, they display a bit more uncertainty in the use of AI use unconditionally in homework.
+
+## **6.B.3: Heat Plot Analysis of Q1-Q5 (Males) - Fig. 11**:
+- The highest totaled responses were those of agreement responses in Q1 (~70), Q3 (~81%), and Q4 (~94%).  This has the single highest rating for Q4 (choice of not disclosing AI use).  Alternatively, at Q4, the percentage of strong disagreement of 0% is reported for not disclosing the use of AI. In the entire survey, Q4 is the single question that has a 0% rate as a strongly disagreed option.
+
+- Q1 - Q4 display darker color shades signifying greater agreement.  Lighter color indicating disagreements are cited for this group - .
+
+- Q3 shows a slightly more even color variation, addressing the question of the unconditional use of AI for homework.
+
+Observation: Darker shades appear in “Agree”, lighter in lower agreement levels. 
+
+Analysis: Confirms bar plot pattern — most male responses are positive. 
+
+```{r gendrFemalePlot, fig.height=4, echo=FALSE}
+
+likert_female <- likert(df_clean[df_clean$gender == "Female", likert_vars])
+
+plot(likert_female, type = "bar") +
+  ggtitle("AI Survey: FEMALE Responses (Bar Plot) - Fig. 12") + theme(plot.title = element_text(hjust=0.5))
+
+plot(likert_female, type = "density") +
+  ggtitle("AI Survey: FEMALE Responses (Density Plot)- Fig. 13") + theme(plot.title = element_text(hjust=0.5))
+
+# Heat Plot defined differently, filtered dataset, no grouping
+likert_female_only <- likert(df_clean[df_clean$gender=="Female", likert_vars])
+plot(likert_female_only, type = "heat") +
+  ggtitle("AI Survey: FEMALE Responses (Heat Plot) - Fig. 14") + theme(plot.title = element_text(hjust=0.5))
+```
+
+## **6.C: Analysis on Females**
+## **6.C.1: Bar plot (Females) - Fig. 12**:
+Bar plot highlights relative proportions per question clearly.
+
+- Most female respondents “Agreed”, with a slightly higher “Undecided” proportions than males in Q2 and Q4. Specifically, Females haves a 12% Undecided and Males a 3% Undecided log at Q4.  The higher undecided rate among females on Q4 (non-disclosure of AI use) likely reflects greater social and contextual sensitivity around disclosure. Females may be more attuned to issues of perception, judgment, or rule clarity, making them less certain about when disclosure is expected or appropriate. In contrast, males’ very low undecided rate suggests they are more decisive—either they disclose or they do not—while females may be navigating more nuanced concerns about fairness, expectations, or potential consequences, leading to hesitation.  However from the male plot, with the exception of Q4, all other questions have a high rate of indecision.
+
+- Females are generally positive toward AI, but a sizable (25%) portion shows uncertainty on certain other questions, like Q2, though on the ethics of AI. Again, they might have weighed context, fairness, and potential social impact more carefully before forming a firm stance. Ethical questions about AI involve ambiguity, trade-offs, and incomplete information.  Research frequently shows that women exhibit more caution in judgment under uncertainty, especially for issues involving privacy, fairness, or harm. This does not signal confusion—but reflection for more deliberative, risk-aware reasoning style , leading to greater hesitation to commit to “ethical” or “unethical” without clearer boundaries or evidence.
+
+- In Q5, there is an approximate even split in agreement (47%) and disagreement (45%) with respect to the right direction of AI. In comparison to the male counterparts whose responses were split as 45% (negative), 21% (undecided), and 36% (positive) of AI's right direction: more undecided males and higher positive support AI's accepted path for females. 
+
+- On the question of AI's ethical stance, 25% of this group (females) were undecided in comparison to 24% for males: both genders were equally skeptical on this subject with a lesser percentage of females agreeing to its unethical leaning.  Is it that females are less experienced with the use of AI or they may see AI use as responsible and acceptable when used correctly, whereas males may be more likely to frame it as a “rule-bending” or performance-enhancing tool, increasing perceived ethical tension?
+
+In comparison to their male counterparts, overall for Q2, the responses were equateable across the groups, but for Q5, for females, the Agreement rate (46) and Undecided rate (8) versus males' Agreement rate (35) and Undecided rate (21).  There are quite significant outputs warranting further investigations.  In short, the path of AI is debateable and needs much discussion and clarification.
+
+## **6.C.2: Density Plot (Female Responses) - Fig. 12**
+
+- Overall, peaks occur at more random locations: at “Agree”, minor peaks at “Undecided”, and very low peak at “Strongly Disagree.” Compared to males, the density for “Undecided” is slightly higher.
+
+- Overall female responses are skewed toward agreement, but slightly more uncertainty or hesitation than males, particularly in questions Q2 and Q4 which appear in the middle of the survey. 
+
+- The shapes of these plots for Q1 and Q3 appear more normal than those of other questions.  We note, however, that Q1 and Q3 are similar - addressing the topic of one's studies.  Also, both use quantifying adverbs: at Q1, question is framed with the word *'usually'*; at Q3, the word *'unconditionally'* is embedded. Is is that females are more attentive to minor details that most unobservant persons would miss?
+
+- Q5, displays similar shape for the male counterparts, where a bi-model trend is visible, signaling that responses cluster around two distinct marks, indicating subgroup heterogeneity (opposing views) and lack of uniformly response.  We can conclude that in the case of similar plots for males, we have varying different sub-groups.
+
+## **6.C.3: Heat Plot (Females) - Fig. 15**
+-  Darker shades appear in the “Agree” region, lighter shades in the “Strongly Disagree” and “Undecided” regions with Q2 and Q4 showing slightly more variation. More shade variation is seen in Q2.
+
+- Confirms bar plot trends — females are largely positive but with more spread in Q2 and Q4, suggesting some hesitancy in these areas. 
+
+- Q5 stands out in that its the only *disagree response that starts at about the 10% mark*; all other strongly disagree responses are less than 10%. This shows the high level of negative effect of females toward the direction of AI (9.8%) which is but slightly higher than that reported for males (7.08%).
+
+**TAKEAWAY**: Females show slightly more uncertainty than males in some questions, but overall trend is positive toward AI.
+
+**Less polarization:** Female curves are broader and flatter, reflecting more moderate, less extreme positions.
+
+**More caution and ambivalence**: Ethical concerns, disclosure attitudes, and AI optimism all show greater uncertainty among women.
+
+**Positive but guarded**: Support exists but is less strong than males, especially on adoption-heavy items like Q1 and Q5.
+
+## **6.D Analysis of Q1-Q5 by CLASS - Fig. 15**
+```{r fig.width=20, fig.height=18, echo=FALSE}
+
+
+# ========================Instructions to user:========================================================
+# To run analysis for a single plot, simply comment unneeded plots. and remove
+# their reference from the line:plots <- c(plots, list(p_bar, p_density, p_heat)) - that is leave only
+# the name of the single plot you desire to run.
+#======================================================================================================
+
+library(likert)
+library(ggplot2)
+library(gridExtra)
+
+likert_vars <- c("Q1","Q2","Q3","Q4","Q5")
+classes <- unique(df_clean$class)  # Freshman, Sophomore, Junior, Senior
+
+plots <- list()  # Store all plots
+
+for (cls in classes) {
+  data_sub <- df_clean[df_clean$class == cls, likert_vars]
+  likert_sub <- likert(data_sub)
+  
+  # 1. Bar plot
+  p_bar <- plot(likert_sub, type = "bar") +
+    ggtitle(paste(cls, "Bar")) + theme(plot.title = element_text(hjust=0.5))
+ 
+   # 2. Density plot
+  p_density <- plot(likert_sub, type = "density") +
+    ggtitle(paste(cls, "Density")) + theme(plot.title = element_text(hjust=0.5))
+  
+  # 3. Heat plot
+  p_heat <- plot(likert_sub, type = "heat") +
+    ggtitle(paste(cls, "Heat")) + theme(plot.title = element_text(hjust=0.5))
+  
+  # Add plots to list
+  plots <- c(plots, list(p_bar, p_density, p_heat))
+}
+
+# Arrange all 12 plots in 4 rows x 3 columns
+do.call(grid.arrange, c(plots, nrow = 4, ncol = 3))
+
+```
+
+## **6.D.1: BARPLOT Analyses for Q1-Q5 by Class - Fig. 15**
+
+Analysis in this section can be drawn from both within and across class; however, more meaningful insights would be gotten if across class observations and viewed.  This will be followed here.
+
+For the BARPLOTS, the agreement percentages are arranged in ascending order (right hand side).
+
+**Q1**: Agreement rate for this question, the use of AI, ranges from 96% (Sophomore) to 80% (Freshman) but ranked (based on increasing agreement percentage) in fourth (Freshman, Senior) and third (Sophomore, Junior) positions from the bottom. What needs to be further examined is that more seniors (75%) reported AI use than sophomores (69%).
+
+**Q2**: Responses to the ethical nature of AI shows that this ranged from 44% (Seniors) to 62% (Juniors).  Is it that more Juniors agreed with this because they have explored its usage more or because they have not fully seen all capabilities?  Why did such low percentage of seniors agreed? Also to note, that this latter group were more highly undecided on this question.
+
+**Q3:** The use of AI for homework agreement percentage ranges from 72% (Seniors) to 86% (Juniors). This shows the shift of mindset with younger students who are more forward thinking and perhaps have little pleasure in learning in the traditional way (statistical tables, abacus, non-scientific calculators).  Between these two groups, this result is of no surprise either way.  However, the surprise comes when the Juniors are compared to the Freshman and Sophomores: my expectation is that the unconditional use of AI would have been more favoured with the younger students.
+
+**Q4**: The agree rate ranges from 88% (Seniors) - 93% (Sophomore) - revealing that all across the divide, students agree to not to disclose their use of AI.  At the other end of this spectra, the disagreement rate was as low as 0% (Freshmen) for choosing not to disclose AI use suggesting that the younger and perhaps more savy users have no reservation to not disclosing their use of AI.
+ 
+**Q5:** The favorable acceptance of Q5 (AI's direction) is ranged between 29% (Sophomore) and 51% (Junior).  The overall response trend for this question is up and down: Freshman (40%) - Sophomore (29%) - Junior (51%) - Senior (44%).  Further examination of why is there such a steep fall in reporting the right direction of AI from the Sophomore group would be in order.
+
+## **6.D.2 DENSITY PLOT Analyses for Q1-Q5 by Class - Fig. 15**
+**ACROSS-CLASS ANALYSIS**
+
+**A. Level of Support for AI**: Seniors and Juniors show the most concentrated peaks around Agree/Strongly Agree. Freshmen show a mix: supportive but with more Undecided spread while Sophomores have the flattest distributions, meaning: there is less certainty, more middle-ground responses, and no clear dominant orientation toward AI support.
+
+Insight: Support for AI tends to increase with academic year, and certainty increases, especially after sophomore year.
+ 
+**B. Variability of Responses**: Sophomores show the highest variability, indicated by the widest density spread.  Freshmen:  display moderate variability while Juniors and Seniors display lowest variability, displayed by tighter peaks.
+
+Insight: More advanced students show greater consensus and less indecision.
+
+**C. Strength of Agreement**: Reviewing 'Strongly Agree' across density curves:
+Highest density: Seniors
+High but narrower: Juniors
+Moderate: Freshmen
+Lowest: Sophomores
+
+Insight: The likelihood of strongly supporting AI grows as students progress academically.
+
+**D. Presence of Multiple Subgroups**: Freshman and Sophomore plots often show multiple mild peaks -> suggests heterogeneity. Juniors and Seniors show unimodal distributions -> more homogeneous views.
+
+Insight: Early-year students are still forming positions; late-year students have more aligned views.
+
+## **6.D.3: HEAT PLOT Analyses for Q1-Q5 by Class - Fig. 15**
+## **ACROSS-CLASS ANALYSIS (Heat Plots)**
+
+**Freshman**: This group has the highest agreed rate (~90%) when compared to other class for Q4, the topic on the non-disclosure of AI's use. Given that these are newer college entrants and perhaps lack full exposure on policies may have resulted in our seen results.
+
+**Sophomore**: This group netted the highest disagreement rate (~45%).  This group would have had some introduction to both academic and AI policies, and in respect to the question of the direction of AI, felt that the path is wrong. 
+
+**Senior**: Regarding the ethics of AI, this group launch the highest undecided rate (28.1).  As seniors, who would have had some use of AI and perhaps brushes of inappropriate use of AI, this group erred on the side of caution by responding as they did.
+
+**A. Overall Concentration Patterns**: Seniors and Juniors show the tightest, hottest clusters in Agree and Strongly Agree, indicating strong consensus. Freshmen display a broader, more diffuse heat spread, with noticeable intensity in 'Undecided', reflecting mixed views. Sophomores have the widest and least focused heat distributions, showing:lower confidence, more mid-scale clustering, and no dominant response pattern
+
+**B. Positive vs. Negative Intensities**: Positive categories (Agree, Strongly Agree) dominate heat intensity in all class groups.  Negative categories remain consistently cool, showing very low density of disagreement across the board.  Upperclassmen exhibit stronger “hot blocks” in Strongly Agree, which are weaker among lower years.
+
+**C. Maturity and Alignment Trend**:  Warmth becomes more concentrated and stable as class level increases.  Juniors and Seniors show reduced variability, signaling clearer and more unified attitudes.  Freshmen and Sophomores show higher variability, indicating developing or unsettled viewpoints.
+
+**D. Key Insight**: Support for AI increases with academic standing, and certainty strengthens sharply after the sophomore year, as seen in increasingly focused heat patterns toward the positive end of the scale.
+
+## **Limitations & Future Work**
+1. Improve Sample Balance and Representation: Since some class groups may be smaller or unevenly represented, which can distort comparative trends.  Future studies should **aim for stratified sampling** to ensure equal or proportionate representation across all classes.  Also, gender representation should also be verified for balance, particularly if gender comparisons are intended. 
+
+2. Strengthen the Measurement Instrument: Likert items appear broadly framed, which may contribute to the high clustering around 'Agree'.  Future iterations should include both positively and negatively worded items to reduce  bias.  **Adding multiple items per construct** (e.g., trust in AI, fear of misuse, academic reliance) would **allow validation through reliability checks** such as Cronbach’s alpha.
+
+3. Address Limitations of Cross-Sectional Design: The study compares classes at one point in time, assuming differences reflect development across years.  A **longitudinal design tracking the same cohort from Freshman → Senior years** would more credibly demonstrate developmental change.  Without this, differences could be influenced by cohort effects rather than academic progression.
+
+4. Incorporate Qualitative Insights:  **The density and heat plots reveal uncertainty**—especially among Freshmen and Sophomores—**but cannot explain why the uncertainty occurs**. **Including short open-ended prompts or focus groups could reveal the underlying reasons for hesitation**, such as lack of exposure, ethical concerns, or confusion about AI tools.
+
+5. Expand Beyond Likert-Only Analysis: **Likert visualizations show patterns but cannot capture deeper psychological or behavioral patterns**.  Additional analyses (logistic regression, latent class analysis) can uncover how demographic variables, discipline, or previous AI experience predict attitudes.  **Behavioral data**—such as frequency of actual AI tool use—could validate whether positive attitudes translate into real practice.
+
+6. Consider External Validity and Contextual Limitations:  The **study appears limited to a small set of classes*,** which restricts generalizability.  **Replicating the study across multiple universities, majors, or geographic regions** would provide a more robust understanding of student AI attitudes.
+
+7. Improve Plot Interpretability:  **Density and Heat plots** provide visual cues but may not be easily interpretable for non-technical audiences.  **Supplementing visuals with effect sizes or confidence intervals** can strengthen reporting clarity.
+
+**Overall Recommendation**:  To deepen the impact of future research, the study should move toward more balanced sampling, richer measurement instruments, longitudinal follow-ups, and mixed-method approaches. This will allow researchers to more confidently interpret shifts in students' attitudes toward AI and understand the underlying mechanisms driving those changes.
+
+## **Conclusion**
+Before a conclusion is made, the researches wishes to comment on the varying formation of the questions.  The wording of Q1 and Q3 contains simple but meaningful words, 'usually' and 'unconditionally' respectively. Q4 is asked in the negative - the inclusion of the word *'not'* while Q2 contains the word *'unethical'*.  This is raised in consideration of whether  some feedback may have been differently responded too if perhaps more due diligence were paid to exact wording.  
+
+Across all three analytical approaches—bar plots, density plots, heat plots, and tables —the **study consistently demonstrates that students hold broadly positive attitudes toward AI**, with clear developmental differences emerging across academic levels. 
+
+*Bar plots* show that 'Agree' is the dominant response for nearly every item, with 'Strongly Agree' increasing notably among Juniors and Seniors. In contrast, Freshman and Sophomore reports display more variability, including higher levels of 'Undecided', indicating that early-year students are still forming their views. Negative responses remain minimal across all classes, suggesting that strong opposition to AI is uncommon in this population.
+
+*Density plots* reinforce these trends by revealing how **response distributions tighten and shift positively as students advance academically**. Freshman exhibits the widest, most diffuse patterns, while Sophomore inputs show the flattest distributions, suggesting uncertainty rather than opposition. Junior and Senior citing, however, display concentrated peaks around positive categories, indicating greater confidence and clearer alignment with AI-supportive statements. This developmental path—moving from mixed and exploratory attitudes to decisive endorsement—suggests that either familiarity with academic contexts, increased exposure to technology, or growing disciplinary maturity may play roles in shaping AI perceptions.
+
+*Heat plots* provide an additional layer of confirmation, showing progressively intensified coloration in the 'Agree' and 'Strongly Agree' categories from lower to upper classes. Freshman and Sophomore reports exhibit broader, cooler distributions, whereas Junior and Senior's feedback show focused “hot spots” that signal both clarity and positivity. The consistently cool negative categories across all groups further support the conclusion that resistance to AI is rare.
+
+Taken together, these visual and statistical indicators point to a coherent pattern: **as students move from Freshman to Senior year, their attitudes toward AI become more positive, more consistent, and more confident. Early-year uncertainty gives way to upper-year endorsement, with Seniors demonstrating the strongest and most uniform support. This progression suggests that **educational experience, increases exposure to AI-related tools, or developing academic maturity may foster more decisive and favorable attitudes toward AI overtime.
+
+---
+## **References**
+[1] Harpe, S. E. (2007). How to analyze Likert and other rating scale data. Midwestern University Chicago College of Pharmacy.
+
+[2] Carifio, J., & Perla, R. J. (2007). Ten common misunderstandings, misconceptions, persistent myths and urban legends about Likert scales and Likert response formats and their antidotes. Journal of Social Sciences, 3(3), 106 116. https://doi.org/10.3844/jssp.2007.106.116.
+
+[3] Jamieson, S. (2004). Likert scales: How to (ab)use them. Medical Education, 38(12), 1217–1218. https://doi.org/10.1111/j.1365-2929.2004.02012.x.
+
+[4] Posit Software, PBC. (2023). RStudio (Version 2023.##) [Computer software]. https://posit.co/products/rstudio/
+
+[5] Bryer, J., & Speerschneider, K. (2016). likert: Analysis and visualization of Likert items (R package version 1.3.5) [Computer software]. https://CRAN.R-project.org/package=likert
